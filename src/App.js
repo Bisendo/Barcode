@@ -1,9 +1,9 @@
-import QrScannerComponent from './Components/QrScanner';
+import BidaScanner from './Components/QrScanner';
 
 function App() {
   return (
     <div className="App">
-      <QrScannerComponent />
+      <BidaScanner />
     </div>
   );
 }

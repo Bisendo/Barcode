@@ -1437,7 +1437,7 @@ const BidaScanner = () => {
               <p className="font-medium">Bida Barcode Scanner</p>
             </div>
             <p className="mb-1">Point your camera at any barcode or QR code</p>
-            <p className="mb-4">Supports products, books, WiFi, URLs, contacts, and more</p>
+            <p className="mb-4">Supports products, WiFi, URLs, contacts, and more</p>
             
             {/* Social Links */}
             <div className="flex justify-center space-x-4 mt-4">
@@ -1480,7 +1480,7 @@ const BidaScanner = () => {
           {/* Copyright */}
           <div className="mt-4 text-xs text-white/50 border-t border-white/10 pt-4">
             <p>© {new Date().getFullYear()} Bida Scanner. All rights reserved.</p>
-            <p className="mt-1">Version 2.0.0</p>
+            <p className="mt-1">Version 4.2.0</p>
           </div>
         </div>
       </motion.div>

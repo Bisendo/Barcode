@@ -30,21 +30,21 @@ const BidaScanner = () => {
   const [productInfo, setProductInfo] = useState(null);
   const [isFetchingProduct, setIsFetchingProduct] = useState(false);
   const [expandedSections, setExpandedSections] = useState({});
-  // const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   
   // Refs
   const videoRef = useRef(null);
   const codeReaderRef = useRef(null);
   const { width, height } = useWindowSize();
 
-  // // Check for mobile view
-  // useEffect(() => {
-  //   const handleResize = () => {
-  //     setIsMobile(window.innerWidth < 768);
-  //   };
-  //   window.addEventListener('resize', handleResize);
-  //   return () => window.removeEventListener('resize', handleResize);
-  // }, []);
+  // Check for mobile view
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Product lookup APIs
   const PRODUCT_APIS = {
@@ -829,7 +829,15 @@ const BidaScanner = () => {
     visible: { opacity: 1, y: 0, transition: { duration: 0.5 } }
   };
 
-  
+  const scaleIn = {
+    hidden: { opacity: 0, scale: 0.9 },
+    visible: { opacity: 1, scale: 1, transition: { duration: 0.3 } }
+  };
+
+  const slideIn = {
+    hidden: { opacity: 0, x: 100 },
+    visible: { opacity: 1, x: 0, transition: { duration: 0.3 } }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-violet-800 p-4 md:p-6">

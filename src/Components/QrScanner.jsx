@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { BrowserMultiFormatReader } from '@zxing/library';
+import { BrowserMultiFormatReader, NotFoundException, ChecksumException, FormatException } from '@zxing/library';
 import {
   FaCamera,
   FaBarcode,
@@ -19,6 +19,8 @@ import {
   FaHistory,
   FaLightbulb,
   FaQrcode,
+  FaExternalLinkAlt,
+  FaShoppingCart,
 } from 'react-icons/fa';
 import { MdTextFields, MdNumbers, MdFlashOn, MdFlashOff } from 'react-icons/md';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -39,9 +41,74 @@ const BidaScanner = () => {
   const [torchEnabled, setTorchEnabled] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [productInfo, setProductInfo] = useState(null);
+  const [isFetchingProduct, setIsFetchingProduct] = useState(false);
   const videoRef = useRef(null);
   const codeReaderRef = useRef(null);
   const { width, height } = useWindowSize();
+
+  // Product lookup APIs
+  const PRODUCT_APIS = {
+    upc: (code) => `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
+    ean: (code) => `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
+    isbn: (code) => `https://openlibrary.org/api/books?bibkeys=ISBN:${code}&format=json&jscmd=data`,
+  };
+
+  const fetchProductInfo = async (code, type) => {
+    setIsFetchingProduct(true);
+    try {
+      let apiUrl;
+      let parser;
+      
+      if (type === 'isbn') {
+        apiUrl = PRODUCT_APIS.isbn(code);
+        const response = await fetch(apiUrl);
+        const data = await response.json();
+        const bookData = data[`ISBN:${code}`];
+        
+        if (bookData) {
+          return {
+            name: bookData.title,
+            image: bookData.cover?.large || bookData.cover?.medium || bookData.cover?.small,
+            details: {
+              Author: bookData.authors?.map(a => a.name).join(', '),
+              Publisher: bookData.publishers?.map(p => p.name).join(', '),
+              'Publish Date': bookData.publish_date,
+              Pages: bookData.number_of_pages,
+            },
+            links: bookData.url ? [{ url: bookData.url, label: 'Open Library' }] : []
+          };
+        }
+        return null;
+      } else {
+        // For UPC/EAN codes
+        apiUrl = PRODUCT_APIS.ean(code);
+        const response = await fetch(apiUrl);
+        const data = await response.json();
+        
+        if (data.status === 1 && data.product) {
+          const product = data.product;
+          return {
+            name: product.product_name || product.generic_name,
+            image: product.image_url,
+            details: {
+              Brand: product.brands,
+              Category: product.categories,
+              'Package Info': product.quantity,
+              Ingredients: product.ingredients_text,
+            },
+            links: product.link ? [{ url: product.link, label: 'Product Page' }] : []
+          };
+        }
+        return null;
+      }
+    } catch (err) {
+      console.error('Error fetching product info:', err);
+      return null;
+    } finally {
+      setIsFetchingProduct(false);
+    }
+  };
 
   const parseScanResult = useCallback((codeData) => {
     if (!codeData) return null;
@@ -79,7 +146,12 @@ const BidaScanner = () => {
         title: 'Website URL',
         fields: [
           { label: 'URL', value: codeData, copyable: true }
-        ]
+        ],
+        action: {
+          label: 'Open Website',
+          icon: <FaExternalLinkAlt />,
+          handler: () => window.open(codeData, '_blank')
+        }
       };
     }
 
@@ -93,7 +165,12 @@ const BidaScanner = () => {
         title: 'Email Address',
         fields: [
           { label: 'Email', value: email, copyable: true }
-        ]
+        ],
+        action: {
+          label: 'Send Email',
+          icon: <FaEnvelope />,
+          handler: () => window.open(`mailto:${email}`, '_blank')
+        }
       };
     }
 
@@ -107,7 +184,12 @@ const BidaScanner = () => {
         title: 'Phone Number',
         fields: [
           { label: 'Phone', value: phone, copyable: true }
-        ]
+        ],
+        action: {
+          label: 'Call Number',
+          icon: <FaPhone />,
+          handler: () => window.open(`tel:${phone}`, '_blank')
+        }
       };
     }
 
@@ -130,7 +212,12 @@ const BidaScanner = () => {
         fields: [
           { label: 'Phone Number', value: number, copyable: true },
           { label: 'Message', value: body, copyable: true }
-        ]
+        ],
+        action: {
+          label: 'Send SMS',
+          icon: <FaEnvelope />,
+          handler: () => window.open(`sms:${number}?body=${encodeURIComponent(body)}`, '_blank')
+        }
       };
     }
 
@@ -212,11 +299,14 @@ const BidaScanner = () => {
       return {
         raw: codeData,
         type: 'product',
+        codeType: codeData.length === 12 ? 'UPC' : 'EAN',
         icon: <FaShoppingBasket className="text-emerald-400" />,
         title: 'Product Barcode',
         fields: [
-          { label: 'Barcode', value: codeData, copyable: true }
-        ]
+          { label: 'Barcode', value: codeData, copyable: true },
+          { label: 'Type', value: codeData.length === 12 ? 'UPC' : 'EAN' }
+        ],
+        canLookup: true
       };
     }
 
@@ -229,7 +319,8 @@ const BidaScanner = () => {
         title: 'Book ISBN',
         fields: [
           { label: 'ISBN', value: codeData, copyable: true }
-        ]
+        ],
+        canLookup: true
       };
     }
 
@@ -294,7 +385,13 @@ const BidaScanner = () => {
 
   const checkCameraPermissions = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: activeCamera,
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        } 
+      });
       
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(device => device.kind === 'videoinput');
@@ -315,10 +412,12 @@ const BidaScanner = () => {
       } else if (err.name === 'NotFoundError') {
         setError('No camera found on this device.');
       } else if (err.name === 'OverconstrainedError') {
-        setError('Camera constraints could not be satisfied.');
+        setError('Camera constraints could not be satisfied. Try switching cameras.');
+      } else {
+        setError('Could not access camera. Please try again.');
       }
     }
-  }, []);
+  }, [activeCamera]);
 
   const applyZoomToStream = useCallback(async () => {
     if (!videoRef.current || !videoRef.current.srcObject) return;
@@ -331,13 +430,11 @@ const BidaScanner = () => {
     try {
       const capabilities = videoTrack.getCapabilities();
       
-      // Check if zoom is supported
       if (!capabilities.zoom) {
         console.warn('Zoom is not supported by this device');
         return;
       }
   
-      // Clamp zoom value to supported range
       const clampedZoom = Math.min(
         Math.max(zoomLevel, capabilities.zoom.min || 1),
         capabilities.zoom.max || 5
@@ -350,6 +447,7 @@ const BidaScanner = () => {
       console.error('Error applying zoom:', err);
     }
   }, [zoomLevel]);
+
   const toggleTorch = useCallback(async () => {
     if (!videoRef.current || !videoRef.current.srcObject) return;
     
@@ -364,7 +462,6 @@ const BidaScanner = () => {
     try {
       const capabilities = videoTrack.getCapabilities();
       
-      // Check if torch is supported
       if (!capabilities.torch) {
         setError('Flash/torch is not supported on this device');
         return;
@@ -383,6 +480,7 @@ const BidaScanner = () => {
   const startScanner = useCallback(async () => {
     setError(null);
     setScanResult(null);
+    setProductInfo(null);
     setIsLoading(true);
 
     if (!videoRef.current) {
@@ -414,9 +512,16 @@ const BidaScanner = () => {
           try {
             const parsedResult = parseScanResult(result.getText());
             setScanResult(parsedResult);
-            setScanHistory(prev => [parsedResult, ...prev].slice(0, 10)); // Keep last 10 scans
+            setScanHistory(prev => [parsedResult, ...prev].slice(0, 10));
             setShowConfetti(true);
             setTimeout(() => setShowConfetti(false), 3000);
+            
+            // Lookup product info if applicable
+            if (parsedResult.canLookup) {
+              fetchProductInfo(parsedResult.raw, parsedResult.type)
+                .then(info => setProductInfo(info));
+            }
+            
             stopScanner();
           } catch (err) {
             setError('Error processing barcode. Please try again.');
@@ -424,9 +529,23 @@ const BidaScanner = () => {
           }
         }
         
-        if (err && !(err.name === 'NotFoundException')) {
-          console.error(err);
-          setError('Error scanning barcode. Please try again.');
+        if (err) {
+          if (err instanceof NotFoundException) {
+            // This is normal - just means no code was found yet
+            return;
+          }
+          
+          console.error('Scan error:', err);
+          let errorMsg = 'Error scanning barcode. Please try again.';
+          
+          if (err instanceof ChecksumException) {
+            errorMsg = 'Barcode checksum error. The code might be damaged.';
+          } else if (err instanceof FormatException) {
+            errorMsg = 'Unsupported barcode format. Try a different code.';
+          }
+          
+          setError(errorMsg);
+          stopScanner();
         }
       });
 
@@ -450,7 +569,9 @@ const BidaScanner = () => {
       } else if (err.name === 'NotReadableError') {
         errorMessage = 'Camera is already in use by another application.';
       } else if (err.name === 'OverconstrainedError') {
-        errorMessage = 'Requested camera configuration is not available.';
+        errorMessage = 'Requested camera configuration is not available. Try switching cameras.';
+      } else {
+        errorMessage = `Camera error: ${err.message}`;
       }
       
       setError(errorMessage);
@@ -466,12 +587,12 @@ const BidaScanner = () => {
   };
 
   const handleZoomIn = () => {
-    setZoomLevel(prev => Math.min(prev + 0.5, 5)); // Max zoom 5x
+    setZoomLevel(prev => Math.min(prev + 0.5, 5));
     applyZoomToStream();
   };
 
   const handleZoomOut = () => {
-    setZoomLevel(prev => Math.max(prev - 0.5, 1)); // Min zoom 1x
+    setZoomLevel(prev => Math.max(prev - 0.5, 1));
     applyZoomToStream();
   };
 
@@ -507,6 +628,12 @@ const BidaScanner = () => {
   const loadFromHistory = (item) => {
     setScanResult(item);
     setShowHistory(false);
+    
+    // Lookup product info if applicable
+    if (item.canLookup) {
+      fetchProductInfo(item.raw, item.type)
+        .then(info => setProductInfo(info));
+    }
   };
 
   const clearHistory = () => {
@@ -561,7 +688,7 @@ const BidaScanner = () => {
           >
             Bida Scanner
           </motion.h1>
-          <p className="text-white/80">The ultimate barcode & QR code scanner</p>
+          <p className="text-white/80">Scan any barcode or QR code</p>
         </div>
 
         {/* Help Section */}
@@ -583,6 +710,7 @@ const BidaScanner = () => {
                   <p><strong>Flash:</strong> Toggle the flash icon to enable/disable torch</p>
                   <p><strong>Camera:</strong> Switch between front and rear cameras (if available)</p>
                   <p><strong>History:</strong> View your previous scans in the history panel</p>
+                  <p><strong>Product Lookup:</strong> For product barcodes, we'll try to find product information automatically</p>
                 </div>
                 <button
                   onClick={() => setShowHelp(false)}
@@ -722,7 +850,7 @@ const BidaScanner = () => {
                     whileTap={{ scale: 0.9 }}
                     onClick={handleZoomIn}
                     disabled={zoomLevel >= 5}
-                    className={`p-2 bg-black/50 rounded-full text-white ${zoomLevel >= 5 ? 'opacity-50' : ''}`}
+                    className={`p-2 bg-black/50 rounded-full text-white ${zoomLevel >= 5 ? 'opacity-50 cursor-not-allowed' : ''}`}
                     title="Zoom In"
                   >
                     <FaSearchPlus />
@@ -732,7 +860,7 @@ const BidaScanner = () => {
                     whileTap={{ scale: 0.9 }}
                     onClick={handleZoomOut}
                     disabled={zoomLevel <= 1}
-                    className={`p-2 bg-black/50 rounded-full text-white ${zoomLevel <= 1 ? 'opacity-50' : ''}`}
+                    className={`p-2 bg-black/50 rounded-full text-white ${zoomLevel <= 1 ? 'opacity-50 cursor-not-allowed' : ''}`}
                     title="Zoom Out"
                   >
                     <FaSearchMinus />
@@ -876,6 +1004,80 @@ const BidaScanner = () => {
                   ))}
                 </div>
 
+                {/* Product Information */}
+                {scanResult.canLookup && (
+                  <div className="mt-6">
+                    <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-2">
+                      Product Information
+                    </h3>
+                    {isFetchingProduct ? (
+                      <div className="flex justify-center py-4">
+                        <FaSpinner className="h-6 w-6 animate-spin text-white" />
+                      </div>
+                    ) : productInfo ? (
+                      <div className="bg-black/20 rounded-lg p-4">
+                        {productInfo.image && (
+                          <div className="flex justify-center mb-3">
+                            <img 
+                              src={productInfo.image} 
+                              alt={productInfo.name} 
+                              className="max-h-40 rounded-lg"
+                              onError={(e) => e.target.style.display = 'none'}
+                            />
+                          </div>
+                        )}
+                        {productInfo.name && (
+                          <h4 className="text-lg font-bold text-white mb-2">{productInfo.name}</h4>
+                        )}
+                        {productInfo.details && Object.entries(productInfo.details).map(([key, value]) => (
+                          value && (
+                            <div key={key} className="mb-1">
+                              <span className="text-sm font-semibold text-white/70">{key}: </span>
+                              <span className="text-sm text-white">{value}</span>
+                            </div>
+                          )
+                        ))}
+                        {productInfo.links && productInfo.links.length > 0 && (
+                          <div className="mt-3 space-y-2">
+                            {productInfo.links.map((link, index) => (
+                              <motion.a
+                                key={index}
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                href={link.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center px-3 py-2 bg-blue-600/30 hover:bg-blue-600/40 rounded-lg text-white text-sm"
+                              >
+                                <FaExternalLinkAlt className="mr-2" />
+                                {link.label}
+                              </motion.a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-white/70 text-sm">No product information found for this barcode</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Action Button */}
+                {scanResult.action && (
+                  <motion.button
+                    whileHover={{ scale: 1.03 }}
+                    whileTap={{ scale: 0.97 }}
+                    onClick={scanResult.action.handler}
+                    className="mt-6 w-full px-4 py-3 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white font-medium rounded-xl transition-all shadow-lg flex items-center justify-center"
+                  >
+                    {scanResult.action.icon && (
+                      <span className="mr-2">{scanResult.action.icon}</span>
+                    )}
+                    {scanResult.action.label}
+                  </motion.button>
+                )}
+
+                {/* Raw Data */}
                 <div className="mt-6">
                   <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">
                     Raw Data
@@ -915,7 +1117,7 @@ const BidaScanner = () => {
         <div className="text-center text-sm text-white/70 p-4">
           <div className="flex items-center justify-center mb-1">
             <FaQrcode className="mr-2" />
-            <p>Bidaus Barcode Scanner</p>
+            <p>Bida Barcode Scanner</p>
           </div>
           <p className="mb-1">Point your camera at any barcode or QR code</p>
           <p>Supports products, books, WiFi, URLs, contacts, and more</p>
